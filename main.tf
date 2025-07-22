@@ -1,5 +1,10 @@
 data "aws_region" "current" {}
 
+
+locals {
+  create_connector = var.create_sink || var.create_restore_connector
+}
+
 module "s3_sink_bucket" {
   count = var.create_sink ? 1 : 0
 
@@ -40,8 +45,8 @@ module "s3_sink_bucket" {
 }
 
 
-module "s3_plugin_bucket" {
-  count = var.create_sink ? 1 : 0
+module "plugin_s3_bucket" {
+  count = local.create_connector ? 1 : 0
 
   source = "terraform-aws-modules/s3-bucket/aws"
   version = "4.11.0"
@@ -80,35 +85,35 @@ module "s3_plugin_bucket" {
 }
 
 
-resource "aws_s3_object" "confluent_s3_zip" {
-  count = var.create_sink ? 1 : 0
+resource "aws_s3_object" "connector_s3_zip" {
+  count = local.create_connector ? 1 : 0
 
-  bucket = module.s3_plugin_bucket[0].s3_bucket_id
-  key    = format("confluentinc-kafka-connect-s3/%s/confluentinc-kafka-connect-s3-%s.zip",var.sink_version,var.sink_version)
-  source = format("%s/connector/confluentinc-kafka-connect-s3-%s.zip",path.module,var.sink_version)
-  #etag   = filemd5(format("%s/connector/confluentinc-kafka-connect-s3-%s.zip",path.module,var.sink_version))
+  bucket = module.plugin_s3_bucket[0].s3_bucket_id
+  key    = format("lensesio/%s/kafka-connect-aws-combined-s3-%s.zip",var.sink_version,var.sink_version)
+  source = format("%s/connector/kafka-connect-combined-%s.zip",path.module,var.sink_version)
+  #etag   = filemd5(format("%s/connector/lensesio-kafka-connect-aws-s3-%s.zip",path.module,var.sink_version))
   content_type = "application/zip"
 }
 
-resource "aws_mskconnect_custom_plugin" "confluent_s3" {
-  count = var.create_sink ? 1 : 0
+resource "aws_mskconnect_custom_plugin" "plugin_s3_zip" {
+  count = local.create_connector ? 1 : 0
 
-  name         = format("confluent-s3-sink-%s-%s",var.name,replace(var.sink_version,".","-"))
+  name         = format("lenses-s3-sink-%s-%s",var.name,replace(var.sink_version,".","-"))
   content_type = "ZIP"
   location {
     s3 {
-      bucket_arn = module.s3_plugin_bucket[0].s3_bucket_arn
-      file_key   = aws_s3_object.confluent_s3_zip[0].key
+      bucket_arn = module.plugin_s3_bucket[0].s3_bucket_arn
+      file_key   = aws_s3_object.connector_s3_zip[0].key
     }
   }
-  description = format("Confluent S3 Sink Source Connector %s %s",var.name,var.sink_version)
+  description = format("Lenses S3 Sink Source Connector %s %s",var.name,var.sink_version)
 }
 
 
 resource "aws_mskconnect_connector" "s3_sink" {
   count = var.create_sink ? 1 : 0
 
-  name = format("s3-sink-%s",var.name)
+  name = format("%s-s3-sink",var.name)
 
   kafkaconnect_version = var.kafka_version #"3.7.1"
 
@@ -129,26 +134,57 @@ resource "aws_mskconnect_connector" "s3_sink" {
   }
 
   connector_configuration = {
-    "connector.class" = "io.confluent.connect.s3.S3SinkConnector"
-    "s3.region" = coalesce(var.region,data.aws_region.current.name)
-    "flush.size" = "5"
-    "schema.compatibility" = "NONE"
-    "tasks.max" = "4"
-    #"topics" = var.topics
+    "connector.class" = "io.lenses.streamreactor.connect.aws.s3.sink.S3SinkConnector"
+    
+    "connect.s3.kcql"= format("INSERT INTO %s:%s SELECT * FROM `*` PARTITIONBY _topic, _header.year, _header.month, _header.day, _header.hour STOREAS `JSON`",module.s3_sink_bucket[0].s3_bucket_id,"topics")
+    "connect.s3.aws.region" =coalesce(var.region,data.aws_region.current.name)
+    "connect.s3.skip.null.values" = true
     "topics.regex" = "^(?!.*amazon_msk).*"
-    # "output.data.format": "JSON",
-    # "compression.codec": "JSON - gzip",    
-    "format.class" = "io.confluent.connect.s3.format.json.JsonFormat"
-    "partitioner.class" = "io.confluent.connect.storage.partitioner.HourlyPartitioner"
-    # "value.converter.schemas.enable" = "false"
-    # "value.converter" = "org.apache.kafka.connect.json.JsonConverter"
-    "storage.class" = "io.confluent.connect.s3.storage.S3Storage"
+    "flush.count" = 5
+    "partition.include.keys" = true
+    "store.envelope" = true
+    "tasks.max" = 4
+    "schema.enable" = "false"
+    "errors.log.enable"= true
+    "value.converter" = "org.apache.kafka.connect.storage.StringConverter"
     "key.converter" = "org.apache.kafka.connect.storage.StringConverter"
-    "s3.bucket.name" = module.s3_sink_bucket[0].s3_bucket_id
-    "topics.dir" = var.topics_dir
+    "key.converter.schemas.enable" = false
     "locale" = "en"
     "timezone" = "UTC" 
-    "behavior.on.null.values" = "ignore"
+    "transforms"="partition"
+    "transforms.partition.type"="io.lenses.connect.smt.header.InsertRecordTimestampHeaders"
+    "transforms.partition.year.format"="yyyy"
+    "transforms.partition.month.format"="MM"
+    "transforms.partition.day.format"="dd"
+    "transforms.partition.hour.format"="HH"
+    #"connect.s3.local.tmp.directory"=".tmp"
+
+    # "transforms.insertFormattedTs.type"="io.lenses.connect.smt.header.TimestampConverter"
+    # "transforms.insertFormattedTs.header.name"="ts"
+    # "transforms.insertFormattedTs.field"="timestamp"
+    # "transforms.insertFormattedTs.target.type"="string"
+    #"transforms.insertFormattedTs.format.to.pattern"="yyyy-MM-dd-HH"
+
+    # "connector.class" = "io.confluent.connect.s3.S3SinkConnector"
+    # "s3.region" = coalesce(var.region,data.aws_region.current.name)
+    # "flush.size" = "5"
+    # "schema.compatibility" = "NONE"
+    # "tasks.max" = "4"
+    # #"topics" = var.topics
+    # "topics.regex" = "^(?!.*amazon_msk).*"
+    # # "output.data.format": "JSON",
+    # # "compression.codec": "JSON - gzip",    
+    # "format.class" = "io.confluent.connect.s3.format.json.JsonFormat"
+    # "partitioner.class" = "io.confluent.connect.storage.partitioner.HourlyPartitioner"
+    # # "value.converter.schemas.enable" = "false"
+    # # "value.converter" = "org.apache.kafka.connect.json.JsonConverter"
+    # "storage.class" = "io.confluent.connect.s3.storage.S3Storage"
+    # "key.converter" = "org.apache.kafka.connect.storage.StringConverter"
+    # "s3.bucket.name" = module.s3_sink_bucket[0].s3_bucket_id
+    # "topics.dir" = var.topics_dir
+    # "locale" = "en"
+    # "timezone" = "UTC" 
+    # "behavior.on.null.values" = "ignore"
 
   }
 
@@ -157,7 +193,7 @@ resource "aws_mskconnect_connector" "s3_sink" {
       bootstrap_servers = var.kafka_brokers
 
       vpc {
-        security_groups = [aws_security_group.s3_sink[0].id]
+        security_groups = [aws_security_group.s3_connector[0].id]
         subnets         = var.vpc_subnets
       }
     }
@@ -173,8 +209,8 @@ resource "aws_mskconnect_connector" "s3_sink" {
 
   plugin {
     custom_plugin {
-      arn      = aws_mskconnect_custom_plugin.confluent_s3[0].arn
-      revision = aws_mskconnect_custom_plugin.confluent_s3[0].latest_revision
+      arn      = aws_mskconnect_custom_plugin.plugin_s3_zip[0].arn
+      revision = aws_mskconnect_custom_plugin.plugin_s3_zip[0].latest_revision
     }
   }
 
@@ -189,31 +225,115 @@ resource "aws_mskconnect_connector" "s3_sink" {
   service_execution_role_arn = aws_iam_role.s3_sink[0].arn
 }
 
+resource "aws_mskconnect_connector" s3_restore {
+  count = var.create_restore_connector ? 1 : 0
+
+  name = format("%s-s3-restore",var.name)
+
+  kafkaconnect_version = var.kafka_version #"3.7.1"
+
+  capacity {
+    autoscaling {
+      mcu_count        = 2
+      min_worker_count = 1
+      max_worker_count = 4
+
+      scale_in_policy {
+        cpu_utilization_percentage = 20
+      }
+
+      scale_out_policy {
+        cpu_utilization_percentage = 80
+      }
+    }
+  }
+
+  connector_configuration = {
+    "connector.class" = "io.confluent.connect.s3.S3SourceConnector"
+    "s3.region" = coalesce(var.region,data.aws_region.current.name)
+    "flush.size" = "5"
+    "schema.compatibility" = "NONE"
+    "tasks.max" = "4"
+    #"topics" = var.topics
+    "topics.regex" = "^(?!.*amazon_msk).*"
+    # "output.data.format": "JSON",
+    # "compression.codec": "JSON - gzip",    
+    "format.class" = "io.confluent.connect.s3.format.json.JsonFormat"
+    "partitioner.class" = "io.confluent.connect.storage.partitioner.HourlyPartitioner"
+    # "value.converter.schemas.enable" = "false"
+    # "value.converter" = "org.apache.kafka.connect.json.JsonConverter"
+    "storage.class" = "io.confluent.connect.s3.storage.S3Storage"
+    "key.converter" = "org.apache.kafka.connect.storage.StringConverter"
+    "s3.bucket.name" = var.restore_bucket_name
+    "topics.dir" = var.topics_dir
+    "locale" = "en"
+    "timezone" = "UTC" 
+    "behavior.on.null.values" = "ignore"
+    "errors.log.enable"           : "true",
+    "errors.deadletterqueue.topic.name": "restore_dlq"
+  }
+
+  kafka_cluster {
+    apache_kafka_cluster {
+      bootstrap_servers = var.kafka_brokers
+
+      vpc {
+        security_groups = [aws_security_group.s3_connector[0].id]
+        subnets         = var.vpc_subnets
+      }
+    }
+  }
+
+  kafka_cluster_client_authentication {
+    authentication_type = "IAM"
+  }
+
+  kafka_cluster_encryption_in_transit {
+    encryption_type = "TLS"
+  }
+
+  plugin {
+    custom_plugin {
+      arn      = aws_mskconnect_custom_plugin.plugin_s3_zip[0].arn
+      revision = aws_mskconnect_custom_plugin.plugin_s3_zip[0].latest_revision
+    }
+  }
+
+  log_delivery {
+    worker_log_delivery {
+      cloudwatch_logs {
+        enabled = true
+        log_group = aws_cloudwatch_log_group.s3_restore[0].name
+      }
+    }
+  }
+  service_execution_role_arn = aws_iam_role.s3_restore[0].arn
+}
+
 
 resource "aws_cloudwatch_log_group" "s3_sink" {
   count = var.create_sink ? 1 : 0
 
-  name = format("kafka/connector/s3-sink-%s",var.name)
+  name = format("kafka/connector/%s-s3-sink",var.name)
 
-  log_group_class = "INFREQUENT_ACCESS"
+  log_group_class = "STANDARD"
+  retention_in_days = 30
+
+}
+
+resource "aws_cloudwatch_log_group" "s3_restore" {
+  count = var.create_restore_connector ? 1 : 0
+
+  name = format("kafka/connector/%s-s3-restore",var.name)
+
+  log_group_class = "STANDARD"
   retention_in_days = 30
 
 }
 
 
-data "aws_iam_policy_document" "role_assumable_by_msk" {
-  statement {
-    effect = "Allow"
-    actions = [ "sts:AssumeRole" ]
-    principals {
-      type        = "Service"
-      identifiers = ["kafkaconnect.amazonaws.com"]
-    }
-  }
-}
-
 resource "aws_iam_role" "s3_sink" {
-  count = var.create_sink ? 1 : 0
+  count = local.create_connector ? 1 : 0
 
   name               = format("%s-kafka-s3-sink",var.name)
   path               = "/"
@@ -244,7 +364,7 @@ resource "aws_iam_policy" "s3_sink" {
          "Resource":"arn:aws:s3:::*"
         },        
         {
-          "Sid": "S3FullAccess",
+          "Sid": "S3DataFullAccess",
           "Action": [
             "s3:*"
           ],
@@ -252,13 +372,13 @@ resource "aws_iam_policy" "s3_sink" {
           "Resource": ["${module.s3_sink_bucket[0].s3_bucket_arn}*"]
         }, 
         {
-          "Sid": "S3ReadOnlyAccess",
+          "Sid": "S3ModuleReadAccess",
           "Action": [
             "s3:Get*",
             "s3:List*"
           ],
           "Effect": "Allow",
-          "Resource": ["${module.s3_plugin_bucket[0].s3_bucket_arn}*"]
+          "Resource": ["${module.plugin_s3_bucket[0].s3_bucket_arn}*"]
         },         
         {
           "Sid": "kafkaAccess",
@@ -277,18 +397,95 @@ resource "aws_iam_policy" "s3_sink" {
 
 }
 
+
+resource "aws_iam_role" "s3_restore" {
+  count = var.create_restore_connector ? 1 : 0
+
+  name               = format("%s-kafka-s3-restore",var.name)
+  path               = "/"
+  assume_role_policy = data.aws_iam_policy_document.role_assumable_by_msk.json
+}
+
+resource "aws_iam_role_policy_attachment" "s3_restore" {
+  count = var.create_restore_connector ? 1 : 0
+
+  role       = aws_iam_role.s3_restore[0].name
+  policy_arn = aws_iam_policy.s3_restore[0].arn
+}
+
+resource "aws_iam_policy" "s3_restore" {
+  count = var.create_restore_connector ? 1 : 0
+
+  name   = format("%s-kafka-s3-restore",var.name)
+  path   = "/"
+  policy = jsonencode({
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+         "Effect":"Allow",
+         "Action":[
+           "s3:ListAllMyBuckets"
+         ],
+         "Resource":"arn:aws:s3:::*"
+        },        
+        {
+          "Sid": "S3DataReadAccess",
+          "Action": [
+            "s3:*"
+          ],
+          "Effect": "Allow",
+          "Resource": ["arn:aws:s3:::${var.restore_bucket_name}*"]
+        }, 
+        {
+          "Sid": "S3ModuleReadAccess",
+          "Action": [
+            "s3:Get*",
+            "s3:List*"
+          ],
+          "Effect": "Allow",
+          "Resource": ["arn:aws:s3:::${var.restore_bucket_name}*"]
+        },         
+        {
+          "Sid": "kafkaAccess",
+          "Effect": "Allow",
+          "Action": [
+            "kafka-cluster:*",
+            "kafkaconnect:*",
+            "kafka:*"
+            ],
+          "Resource": [
+            "*"
+          ]
+        }
+      ]
+    })
+
+}
+
+
             # "${replace(var.msk_cluster_arn,"cluster","topic")}/*",
             # "${var.msk_cluster_arn}",
             # "${replace(var.msk_cluster_arn,"cluster","group")}/*"
 
+data "aws_iam_policy_document" "role_assumable_by_msk" {
+  statement {
+    effect = "Allow"
+    actions = [ "sts:AssumeRole" ]
+    principals {
+      type        = "Service"
+      identifiers = ["kafkaconnect.amazonaws.com"]
+    }
+  }
+}
 
-resource "aws_security_group" "s3_sink" {
-  count = var.create_sink ? 1 : 0
 
-  name     = format("%s-kafka-s3-sink",var.name)
+resource "aws_security_group" "s3_connector" {
+  count = local.create_connector ? 1 : 0
+
+  name     = format("%s-kafka-s3-connector",var.name)
   vpc_id   = var.vpc_id
 
-  tags = merge({"Name" = format("%s-kafka-s3-sink",var.name)})
+  tags = merge({"Name" = format("%s-kafka-s3-connector",var.name)})
 
   egress {
       from_port       = 0
@@ -307,7 +504,7 @@ resource "aws_security_group" "s3_sink" {
 
 # resource "aws_mskconnect_connector" "s3_source_restore" {
 #   name                = "s3-restore-source"
-#   plugins { custom_plugin { arn = aws_mskconnect_custom_plugin.confluent_s3.arn } }
+#   plugins { custom_plugin { arn = aws_mskconnect_custom_plugin.plugin_s3_zip.arn } }
 #   service_execution_role_arn = aws_iam_role.msk_exec.arn
 #   # …capacity, cluster, subnets, security groups…
 #   connector_configuration = jsondecode(file("restore-config.json"))

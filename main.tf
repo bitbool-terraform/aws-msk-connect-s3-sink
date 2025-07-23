@@ -89,8 +89,8 @@ resource "aws_s3_object" "connector_s3_zip" {
   count = local.create_connector ? 1 : 0
 
   bucket = module.plugin_s3_bucket[0].s3_bucket_id
-  key    = format("lensesio/%s/kafka-connect-aws-combined-s3-%s.zip",var.sink_version,var.sink_version)
-  source = format("%s/connector/kafka-connect-combined-%s.zip",path.module,var.sink_version)
+  key    = format("lensesio/%s/kafka-connect-aws-s3-%s.zip",var.sink_version,var.sink_version)
+  source = format("%s/connector/kafka-connect-aws-s3-%s.zip",path.module,var.sink_version)
   #etag   = filemd5(format("%s/connector/lensesio-kafka-connect-aws-s3-%s.zip",path.module,var.sink_version))
   content_type = "application/zip"
 }
@@ -136,28 +136,36 @@ resource "aws_mskconnect_connector" "s3_sink" {
   connector_configuration = {
     "connector.class" = "io.lenses.streamreactor.connect.aws.s3.sink.S3SinkConnector"
     
-    "connect.s3.kcql"= format("INSERT INTO %s:%s SELECT * FROM `*` PARTITIONBY _topic, _header.year, _header.month, _header.day, _header.hour STOREAS `JSON`",module.s3_sink_bucket[0].s3_bucket_id,"topics")
+    #"connect.s3.kcql"= format("INSERT INTO %s:%s SELECT * FROM `*` PARTITIONBY _topic, _header.year, _header.month, _header.day, _header.hour STOREAS `JSON`",module.s3_sink_bucket[0].s3_bucket_id,"topics")
+    "connect.s3.kcql"= format("INSERT INTO %s:%s SELECT * FROM `*` STOREAS `JSON`",module.s3_sink_bucket[0].s3_bucket_id,"topics")
     "connect.s3.aws.region" =coalesce(var.region,data.aws_region.current.name)
     "connect.s3.skip.null.values" = true
     "topics.regex" = "^(?!.*amazon_msk).*"
     "flush.count" = 5
-    "partition.include.keys" = true
+    "flush.size" = 50000000 #(50MB)
+    "flush.interval" = 60 #1min
+    #"partition.include.keys" = true
     "store.envelope" = true
+    "store.envelope.fields.key" = true
+    "store.envelope.fields.headers" = true
+    "store.envelope.fields.value" = true
+    "store.envelope.fields.metadata" = true
+    "connect.s3.compression.codec" = "GZIP"
     "tasks.max" = 4
-    "schema.enable" = "false"
+    "schema.enable" = false
     "errors.log.enable"= true
-    "value.converter" = "org.apache.kafka.connect.storage.StringConverter"
+    "value.converter"= "org.apache.kafka.connect.storage.StringConverter"
     "key.converter" = "org.apache.kafka.connect.storage.StringConverter"
+    "value.converter.schemas.enable" = false
     "key.converter.schemas.enable" = false
     "locale" = "en"
     "timezone" = "UTC" 
-    "transforms"="partition"
-    "transforms.partition.type"="io.lenses.connect.smt.header.InsertRecordTimestampHeaders"
-    "transforms.partition.year.format"="yyyy"
-    "transforms.partition.month.format"="MM"
-    "transforms.partition.day.format"="dd"
-    "transforms.partition.hour.format"="HH"
-    #"connect.s3.local.tmp.directory"=".tmp"
+    # "transforms"="partition"
+    # "transforms.partition.type"="io.lenses.connect.smt.header.InsertRecordTimestampHeaders"
+    # "transforms.partition.year.format"="yyyy"
+    # "transforms.partition.month.format"="MM"
+    # "transforms.partition.day.format"="dd"
+    # "transforms.partition.hour.format"="HH"
 
     # "transforms.insertFormattedTs.type"="io.lenses.connect.smt.header.TimestampConverter"
     # "transforms.insertFormattedTs.header.name"="ts"

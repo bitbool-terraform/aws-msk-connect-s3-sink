@@ -137,19 +137,15 @@ resource "aws_mskconnect_connector" "s3_sink" {
     "connector.class" = "io.lenses.streamreactor.connect.aws.s3.sink.S3SinkConnector"
     
     #"connect.s3.kcql"= format("INSERT INTO %s:%s SELECT * FROM `*` PARTITIONBY _topic, _header.year, _header.month, _header.day, _header.hour STOREAS `JSON`",module.s3_sink_bucket[0].s3_bucket_id,"topics")
-    "connect.s3.kcql"= format("INSERT INTO %s:%s SELECT * FROM `*` STOREAS `JSON`",module.s3_sink_bucket[0].s3_bucket_id,"topics")
+    "connect.s3.kcql"= format("INSERT INTO %s:%s SELECT * FROM `*` STOREAS `JSON` PROPERTIES ('flush.size'=1000000, 'flush.interval'=60, 'flush.count'=10, 'store.envelope'=true)",module.s3_sink_bucket[0].s3_bucket_id,"topics")
     "connect.s3.aws.region" =coalesce(var.region,data.aws_region.current.name)
     "connect.s3.skip.null.values" = true
     "topics.regex" = "^(?!.*amazon_msk).*"
-    "flush.count" = 5
-    "flush.size" = 50000000 #(50MB)
-    "flush.interval" = 60 #1min
-    #"partition.include.keys" = true
-    "store.envelope" = true
-    "store.envelope.fields.key" = true
-    "store.envelope.fields.headers" = true
-    "store.envelope.fields.value" = true
-    "store.envelope.fields.metadata" = true
+    # In version 9, these properties were moved here
+    # "flush.count" = 5
+    # "flush.size" = 50000000 #(50MB)
+    # "flush.interval" = 60 #1min
+    # "partition.include.keys" = true
     "connect.s3.compression.codec" = "GZIP"
     "tasks.max" = 4
     "schema.enable" = false

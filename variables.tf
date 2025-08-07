@@ -15,3 +15,7 @@ variable "tags" { default = {} }
 
 variable "restore_bucket_name" { default = null }
 variable "topics_to_restore" { default = null }
+
+variable "flush_size" { default = "1000000" }
+variable "flush_interval" { default = "180" }
+variable "flush_count" { default = "500" }

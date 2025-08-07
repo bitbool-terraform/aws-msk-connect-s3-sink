@@ -137,7 +137,7 @@ resource "aws_mskconnect_connector" "s3_sink" {
     "connector.class" = "io.lenses.streamreactor.connect.aws.s3.sink.S3SinkConnector"
     
     #"connect.s3.kcql"= format("INSERT INTO %s:%s SELECT * FROM `*` PARTITIONBY _topic, _header.year, _header.month, _header.day, _header.hour STOREAS `JSON`",module.s3_sink_bucket[0].s3_bucket_id,"topics")
-    "connect.s3.kcql"= format("INSERT INTO %s:%s SELECT * FROM `*` STOREAS `JSON` PROPERTIES ('flush.size'=1000000, 'flush.interval'=60, 'flush.count'=10, 'store.envelope'=true)",module.s3_sink_bucket[0].s3_bucket_id,"topics")
+    "connect.s3.kcql"= format("INSERT INTO %s:%s SELECT * FROM `*` STOREAS `JSON` PROPERTIES ('flush.size'=%s, 'flush.interval'=%s, 'flush.count'=%s, 'store.envelope'=true)",module.s3_sink_bucket[0].s3_bucket_id,"topics",var.flush_size,var.flush_interval,var.flush_count)
     "connect.s3.aws.region" =coalesce(var.region,data.aws_region.current.name)
     "connect.s3.skip.null.values" = true
     "topics.regex" = "^(?!.*amazon_msk).*"

@@ -14,3 +14,4 @@ variable "vpc_subnets" {}
 variable "tags" { default = {} }
 
 variable "restore_bucket_name" { default = null }
+variable "topics_to_restore" { default = null }

@@ -150,8 +150,8 @@ resource "aws_mskconnect_connector" "s3_sink" {
     "tasks.max" = 4
     "schema.enable" = false
     "errors.log.enable"= true
-    "value.converter"= "org.apache.kafka.connect.storage.StringConverter"
-    "key.converter" = "org.apache.kafka.connect.storage.StringConverter"
+    # "value.converter"= "org.apache.kafka.connect.storage.StringConverter"
+    # "key.converter" = "org.apache.kafka.connect.storage.StringConverter"
     "value.converter.schemas.enable" = false
     "key.converter.schemas.enable" = false
     "locale" = "en"
@@ -229,6 +229,8 @@ resource "aws_mskconnect_connector" "s3_sink" {
   service_execution_role_arn = aws_iam_role.s3_sink[0].arn
 }
 
+
+
 resource "aws_mskconnect_connector" s3_restore {
   count = var.create_restore_connector ? 1 : 0
 
@@ -253,28 +255,19 @@ resource "aws_mskconnect_connector" s3_restore {
   }
 
   connector_configuration = {
-    "connector.class" = "io.confluent.connect.s3.S3SourceConnector"
-    "s3.region" = coalesce(var.region,data.aws_region.current.name)
-    "flush.size" = "5"
-    "schema.compatibility" = "NONE"
-    "tasks.max" = "4"
-    #"topics" = var.topics
-    "topics.regex" = "^(?!.*amazon_msk).*"
-    # "output.data.format": "JSON",
-    # "compression.codec": "JSON - gzip",    
-    "format.class" = "io.confluent.connect.s3.format.json.JsonFormat"
-    "partitioner.class" = "io.confluent.connect.storage.partitioner.HourlyPartitioner"
-    # "value.converter.schemas.enable" = "false"
-    # "value.converter" = "org.apache.kafka.connect.json.JsonConverter"
-    "storage.class" = "io.confluent.connect.s3.storage.S3Storage"
-    "key.converter" = "org.apache.kafka.connect.storage.StringConverter"
-    "s3.bucket.name" = var.restore_bucket_name
-    "topics.dir" = var.topics_dir
-    "locale" = "en"
-    "timezone" = "UTC" 
-    "behavior.on.null.values" = "ignore"
-    "errors.log.enable"           : "true",
-    "errors.deadletterqueue.topic.name": "restore_dlq"
+    "connector.class" = "io.lenses.streamreactor.connect.aws.s3.source.S3SourceConnector"
+    "connect.s3.kcql"=join(";",formatlist(format("insert into %%s select * from %s:%s/%%s STOREAS `JSON` PROPERTIES ('store.envelope'=true)",var.restore_bucket_name,"topics"),var.topics_to_restore,var.topics_to_restore),[""])
+    "connect.s3.aws.region" =coalesce(var.region,data.aws_region.current.name)
+    "connect.s3.compression.codec" = "GZIP"
+    "tasks.max" = 4
+    #"topics.regex" = "^(?!.*amazon_msk).*"
+    # "value.converter"= "org.apache.kafka.connect.storage.StringConverter"
+    # "key.converter" = "org.apache.kafka.connect.storage.StringConverter"
+    # "value.converter.schemas.enable" = false
+    # "key.converter.schemas.enable" = false
+    # "locale" = "en"
+    # "timezone" = "UTC" 
+
   }
 
   kafka_cluster {
@@ -492,6 +485,13 @@ resource "aws_security_group" "s3_connector" {
   tags = merge({"Name" = format("%s-kafka-s3-connector",var.name)})
 
   egress {
+      from_port       = 0
+      to_port         = 0
+      protocol        = -1
+      cidr_blocks     = ["0.0.0.0/0"]
+  }  
+
+  ingress {
       from_port       = 0
       to_port         = 0
       protocol        = -1
